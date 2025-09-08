@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import List, Dict
+from pathlib import Path
 
 import frontmatter
 
@@ -44,4 +46,63 @@ def inject_navigation_and_create_toc(output_dir: str) -> None:
         json.dump(toc, f, ensure_ascii=False, indent=2)
 
 
-__all__ = ["inject_navigation_and_create_toc"]
+def create_summary_from_chapters(output_dir: str) -> None:
+    """Create SUMMARY.md from generated markdown chapters."""
+    output_path = Path(output_dir)
+    
+    # Find all markdown files (excluding SUMMARY.md itself)
+    md_files = sorted([
+        f for f in output_path.glob("*.md") 
+        if f.name not in ("SUMMARY.md", "README.md")
+    ])
+    
+    if not md_files:
+        return
+    
+    # Extract titles from first line of each file
+    summary_lines = ["# Summary\n\n"]
+    
+    for md_file in md_files:
+        try:
+            with open(md_file, 'r', encoding='utf-8') as f:
+                content = f.read().strip()
+            
+            # Extract the first heading as title
+            title = extract_first_heading(content)
+            if not title:
+                # Fallback to filename
+                title = md_file.stem.replace('_', ' ').replace('-', ' ').title()
+            
+            # Create markdown link
+            summary_lines.append(f"- [{title}]({md_file.name})\n")
+            
+        except Exception as e:
+            print(f"Warning: Could not process {md_file}: {e}")
+            continue
+    
+    # Write SUMMARY.md
+    summary_path = output_path / "SUMMARY.md"
+    with open(summary_path, 'w', encoding='utf-8') as f:
+        f.writelines(summary_lines)
+
+
+def extract_first_heading(content: str) -> str:
+    """Extract the first heading from markdown content."""
+    lines = content.split('\n')
+    
+    for line in lines:
+        line = line.strip()
+        if line.startswith('#'):
+            # Remove leading # symbols and clean up
+            title = re.sub(r'^#+\s*', '', line)
+            title = title.strip()
+            return title
+    
+    return ""
+
+
+__all__ = [
+    "inject_navigation_and_create_toc", 
+    "create_summary_from_chapters",
+    "extract_first_heading"
+]

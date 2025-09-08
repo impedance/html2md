@@ -310,4 +310,3 @@ for f in _chapters/*.html; do
 done
 ```
 
-Хочешь — добавлю к этому ещё маленькую Python-обвязку (`convert_chapters_to_md.py`), чтобы не писать shell-цикл и удобно вызывать из `cli.py`.

@@ -31,94 +31,112 @@ def main() -> None:
 
 
 @app.command()
-def run(
-    docx_path: str = typer.Argument(..., help="Путь к входному DOCX файлу."),
+def from_html_pandoc(
+    html_path: str = typer.Argument(..., help="Путь к входному HTML файлу."),
     output_dir: str = typer.Option(
         "output", "--out", "-o", help="Директория для сохранения Markdown файлов."
     ),
-    style_map: Path = typer.Option(
-        Path(__file__).with_name("mammoth_style_map.map"),
-        help="Путь к файлу style-map для Mammoth.",
+    split_level: int = typer.Option(
+        1, "--split-level", help="Уровень заголовка для разделения на главы (1 для h1, 2 для h2, etc.)."
     ),
-    rules_path: Path = typer.Option(
-        Path(__file__).resolve().parents[2] / "formatting_rules.md",
-        help="Путь к правилам форматирования.",
+    media_dir: str = typer.Option(
+        "media", "--media-dir", help="Название директории для медиа файлов."
     ),
-    samples_dir: Path = typer.Option(
-        Path(__file__).resolve().parents[2] / "samples",
-        help="Каталог с примерами форматирования.",
+    remove_toc: bool = typer.Option(
+        True, "--remove-toc/--keep-toc", help="Удалить оглавление из финального вывода."
     ),
-    model: str = typer.Option(
-        DEFAULT_MODEL, "--model", help="Имя модели для форматирования."
-    ),
-    provider: str = typer.Option(
-        DEFAULT_PROVIDER, "--provider", help="API провайдер (openrouter или mistral)."
-    ),
-    dry_run: bool = typer.Option(
-        False, "--dry-run/--no-dry-run", help="Запуск без обращения к LLM."
+    keep_temp: bool = typer.Option(
+        False, "--keep-temp", help="Сохранить временные файлы для отладки."
     ),
 ) -> None:
-    """Run the conversion pipeline."""
-    logging.getLogger(__name__).info("Running the pipeline")
-    console.print(f"[bold green]Запуск конвертации для файла:[/] {docx_path}")
+    """Run the pandoc-based HTML to Markdown conversion pipeline."""
+    import subprocess
+    import tempfile
+    import shutil
+    from pathlib import Path as P
+    
+    logging.getLogger(__name__).info("Running the pandoc pipeline")
+    console.print(f"[bold green]Запуск конвертации для файла:[/] {html_path}")
+    
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
-
-    images_dir = output_path / "images"
-    preprocess.extract_images(docx_path, str(images_dir))
-
-    html = preprocess.convert_docx_to_html(docx_path, str(style_map))
-    # Remove table of contents to clean up the document
-    html = preprocess.remove_table_of_contents(html)
-    chapters = splitter.split_html_by_h1(html)
-
-    # Temporary fix: only send the 4th chapter to the model
-    if len(chapters) >= 4:
-        chapters = [chapters[3]]
-    else:
-        chapters = []
-
-    if dry_run:
-        temp_dir = output_path / "html"
-        temp_dir.mkdir(parents=True, exist_ok=True)
-
-        if chapters:
-            for idx, chapter in enumerate(chapters, start=1):
-                (temp_dir / f"chapter_{idx}.html").write_text(chapter, encoding="utf-8")
-            console.print(
-                f"[yellow]Dry run completed. {len(chapters)} HTML chapters saved to {temp_dir}.[/]"
-            )
-        else:
-            # No H1 tags found, save the entire HTML as a single file
-            (temp_dir / "full_document.html").write_text(html, encoding="utf-8")
-            console.print(
-                f"[yellow]Dry run completed. No H1 tags found, full HTML saved as full_document.html in {temp_dir}.[/]"
-            )
-        return
-
-    doc_slug = slugify(Path(docx_path).stem)
-    builder = prompt_builder.PromptBuilder(rules_path, samples_dir)
     
-    # If model is the default and doesn't match provider, use provider's default model
-    if model == DEFAULT_MODEL:
-        model = get_default_model_for_provider(provider)
+    # Step 1: Restore numbers in headings using pandoc + Lua filter
+    console.print("[yellow]Шаг 1: Восстановление номеров в заголовках[/]")
+    lua_filter_path = Path(__file__).parent / "restore_numbers.lua"
     
-    client = ClientFactory.create_client(provider, builder, model=model)
-
-    with Progress() as progress:
-        task = progress.add_task("Formatting chapters", total=len(chapters))
-        for idx, chapter in enumerate(chapters, start=1):
-            manifest, md = client.format_chapter(chapter)
-            processed = postprocess.PostProcessor(md, idx, doc_slug).run()
-            warnings = validators.run_all_validators(processed)
-            for w in warnings:
-                logging.warning(w)
-            file_path = output_path / manifest["filename"]
-            file_path.write_text(processed, encoding="utf-8")
-            progress.advance(task)
-
-    navigation.inject_navigation_and_create_toc(str(output_path))
-    console.print(f"[bold green]Конвертация завершена. Результаты в:[/] {output_dir}")
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False) as temp_numbered:
+        numbered_html_path = temp_numbered.name
+    
+    try:
+        subprocess.run([
+            "pandoc", html_path,
+            "--from=html", "--to=html",
+            "--standalone",
+            f"--lua-filter={lua_filter_path}",
+            "-o", numbered_html_path
+        ], check=True)
+        
+        # Step 2: Split HTML into chapters
+        console.print("[yellow]Шаг 2: Разделение на главы[/]")
+        chapters_dir = output_path / "_chapters" 
+        chapters_dir.mkdir(exist_ok=True)
+        
+        # Read numbered HTML and split by heading level
+        with open(numbered_html_path, 'r', encoding='utf-8') as f:
+            html_content = f.read()
+        
+        chapters = splitter.split_html_by_heading_level(html_content, split_level)
+        
+        # Step 3: Convert each chapter to markdown with pandoc
+        console.print(f"[yellow]Шаг 3: Конвертация {len(chapters)} глав в Markdown[/]")
+        
+        with Progress() as progress:
+            task = progress.add_task("Converting chapters", total=len(chapters))
+            
+            for idx, (title, chapter_html) in enumerate(chapters, start=1):
+                # Save chapter HTML
+                chapter_slug = slugify(title) if title else f"chapter_{idx:02d}"
+                chapter_filename = f"{idx:02d}.{chapter_slug}"
+                chapter_html_path = chapters_dir / f"{chapter_filename}.html"
+                
+                with open(chapter_html_path, 'w', encoding='utf-8') as f:
+                    f.write(f"<html><body>{chapter_html}</body></html>")
+                
+                # Create media directory for this chapter
+                chapter_media_dir = output_path / media_dir / f"ch{idx:02d}"
+                chapter_media_dir.mkdir(parents=True, exist_ok=True)
+                
+                # Convert to markdown with pandoc
+                chapter_md_path = output_path / f"{chapter_filename}.md"
+                
+                subprocess.run([
+                    "pandoc", str(chapter_html_path),
+                    "--from=html", "--to=gfm",
+                    f"--extract-media={chapter_media_dir}",
+                    "--wrap=none",
+                    "-o", str(chapter_md_path)
+                ], check=True)
+                
+                progress.advance(task)
+        
+        # Step 4: Generate navigation
+        console.print("[yellow]Шаг 4: Создание навигации[/]")
+        navigation.create_summary_from_chapters(str(output_path))
+        
+        # Cleanup temporary files if not keeping them
+        if not keep_temp:
+            shutil.rmtree(chapters_dir, ignore_errors=True)
+            Path(numbered_html_path).unlink(missing_ok=True)
+        
+        console.print(f"[bold green]Конвертация завершена. Результаты в:[/] {output_dir}")
+        
+    except subprocess.CalledProcessError as e:
+        console.print(f"[red]Ошибка pandoc: {e}[/]")
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]Ошибка: {e}[/]")
+        raise typer.Exit(1)
 
 
 if __name__ == "__main__":
