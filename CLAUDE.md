@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-`doc2md` is a Python CLI tool that converts technical documentation from DOCX format to structured Markdown files using LLM-based formatting. It's built with Poetry for dependency management and uses Typer for the CLI interface.
+`html2md` is a Python CLI tool that converts technical documentation from HTML format to structured Markdown files using pandoc. It restores chapter numbers from table of contents, splits documents by chapters, and organizes media files per chapter. Built with Poetry for dependency management and uses Typer for the CLI interface.
 
 ## Development Commands
 
@@ -16,15 +16,14 @@ poetry install
 ### Running the Application
 ```bash
 # Main conversion command
-poetry run doc2md run input.docx --out output_dir --model gpt-4o-mini --dry-run
+poetry run html2md from-html-pandoc input.html --out output_dir --split-level 1
 
 # Available options:
 # --out: Output directory (default: output)
-# --model: OpenRouter model for formatting
-# --dry-run: Preprocessing only, no LLM calls
-# --style-map: Custom Mammoth style file path
-# --rules-path: Custom formatting rules file
-# --samples-dir: Directory with formatting examples
+# --split-level: Heading level to split chapters (default: 1)
+# --media-dir: Media directory name (default: media)
+# --remove-toc: Remove table of contents from output
+# --keep-temp: Keep temporary files for debugging
 ```
 
 ### Testing and Code Quality
@@ -40,27 +39,24 @@ pytest
 
 ## Architecture
 
-The application follows a pipeline architecture with distinct phases:
+The application follows a pandoc-based pipeline architecture with distinct phases:
 
-1. **Preprocessing** (`preprocess.py`): Converts DOCX to HTML using Mammoth, extracts images
-2. **Splitting** (`splitter.py`): Breaks HTML into chapters by H1 tags
-3. **LLM Processing** (`llm_client.py`): Formats each chapter using OpenRouter API
-4. **Post-processing** (`postprocess.py`): Applies final transformations to Markdown
-5. **Validation** (`validators.py`): Runs quality checks on output
-6. **Navigation** (`navigation.py`): Injects navigation links and creates table of contents
+1. **Number Restoration** (`restore_numbers.lua`): Restores chapter numbers from TOC using pandoc Lua filter
+2. **Splitting** (`splitter.py`): Breaks numbered HTML into chapters by heading level
+3. **Pandoc Processing**: Converts each chapter to GitHub Flavored Markdown with media extraction
+4. **Navigation** (`navigation.py`): Creates SUMMARY.md and manages inter-chapter links
+5. **Validation** (`validators.py`): Runs quality checks on output (HTML-specific validations disabled)
 
 ### Key Components
 
-- **CLI Entry Point**: `src/doc2md/cli.py` - Main Typer application
-- **Configuration**: `src/doc2md/config.py` - Default settings and model configuration
-- **Prompt Building**: `src/doc2md/prompt_builder.py` - Constructs LLM prompts with rules and examples
+- **CLI Entry Point**: `src/doc2md/cli.py` - Main Typer application with `from-html-pandoc` command
+- **Configuration**: `src/doc2md/config.py` - Default settings (LLM configs maintained but not used)
+- **Lua Filter**: `restore_numbers.lua` - Pandoc filter for restoring chapter numbers from TOC
 - **Schema**: `src/doc2md/schema.py` - Data structure definitions
 
 ### Configuration Files
 
-- **Environment**: `.env` file with OpenRouter API configuration
-- **Formatting Rules**: `formatting_rules.md` - Detailed Markdown conversion guidelines
-- **Style Mapping**: Custom Mammoth style map for DOCX processing
-- **Examples**: `samples/` directory with formatting examples for LLM prompts
+- **Lua Filter**: `restore_numbers.lua` - Pandoc filter for number restoration
+- **Environment**: `.env` file (maintained for potential future LLM features)
 
-The pipeline is designed to be modular, allowing for dry-runs (preprocessing only) and customizable formatting rules through external configuration files.
+The pipeline is designed to be modular, using pandoc for reliable HTML to Markdown conversion with proper media handling and chapter organization.
